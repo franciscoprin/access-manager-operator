@@ -72,6 +72,19 @@ spec:
         - --leader-elect
         image: controller:latest
         name: manager
+        env:
+        - name: OKTA_CLIENT_ORGURL
+          valueFrom:
+            secretKeyRef:
+              name: okta-secrets
+              namespace: access-manager-operator
+              key: client-org-url
+        - name: OKTA_CLIENT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: okta-secrets
+              namespace: access-manager-operator
+              key: client-token
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

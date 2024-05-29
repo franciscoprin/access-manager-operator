@@ -8,6 +8,42 @@
 You’ll need a Kubernetes cluster to run against. You can use [KIND](https://sigs.k8s.io/kind) to get a local cluster for testing, or run against a remote cluster.
 **Note:** Your controller will automatically use the current context in your kubeconfig file (i.e. whatever cluster `kubectl cluster-info` shows).
 
+### Set Okta credentials as secrets
+1. Create a file named okta-secrets.yaml with the following content. Replace the placeholder values with your actual Okta domain and API token encoded in Base64.
+
+    ```yaml
+    apiVersion: v1
+    kind: Secret
+    metadata:
+        name: okta-secrets
+        namespace: access-manager-operator
+        type: Opaque
+    data:
+        client-org-url: <base64_encoded_okta_domain>
+        client-token: <base64_encoded_api_token>
+    ```
+
+2. To encode your Okta domain and API token in Base64, you can use the following command:
+
+    ```bash
+    echo -n 'your_okta_domain' | base64 # <base64_encoded_okta_domain>
+    echo -n 'your_api_token' | base64 # <base64_encoded_api_token>
+    ```
+
+    This will output the Base64 encoded values which you can then use in the YAML file.
+
+3. Use kubectl to apply the YAML file:
+
+    ```bash
+    kubectl apply -f okta-secrets.yaml
+    ```
+
+4. Verify if the secrets have been created successfully, the secrets can described using the following command:
+
+    ```bash
+    kubectl describe secret okta-secrets -n access-manager-operator
+    ```
+
 ### Running on the cluster
 1. Install Instances of Custom Resources:
 

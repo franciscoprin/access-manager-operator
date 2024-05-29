@@ -12,7 +12,7 @@ spec:
     listKind: OktaGroupList
     plural: oktagroups
     singular: oktagroup
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1
     schema:
@@ -37,20 +37,34 @@ spec:
               description:
                 description: Description is the description of the Okta group
                 type: string
-              name:
-                description: Name is the name of the Okta group
-                type: string
               users:
                 description: Users is the list of users in the Okta group
                 items:
                   type: string
                 type: array
             required:
-            - name
             - users
             type: object
           status:
             description: OktaGroupStatus defines the observed state of OktaGroup
+            properties:
+              created:
+                description: Created is the time when the Okta group was created.
+                format: date-time
+                type: string
+              id:
+                description: Id is the unique identifier of the Okta group.
+                type: string
+              lastMembershipUpdated:
+                description: LastMembershipUpdated is the time when the membership
+                  of the Okta group was last updated.
+                format: date-time
+                type: string
+              lastUpdated:
+                description: LastUpdated is the time when the Okta group was last
+                  updated.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true

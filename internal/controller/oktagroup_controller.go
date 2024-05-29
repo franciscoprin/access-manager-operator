@@ -22,9 +22,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	accessmanagerv1 "github.com/franciscoprin/access-manager-operator/api/v1"
+	"github.com/okta/okta-sdk-golang/v2/okta"
 )
 
 // OktaGroupReconciler reconciles a OktaGroup object
@@ -37,6 +42,10 @@ type OktaGroupReconciler struct {
 //+kubebuilder:rbac:groups=access-manager.github.com,resources=oktagroups/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=access-manager.github.com,resources=oktagroups/finalizers,verbs=update
 
+const (
+	ConstOktaGroupFinalizer = "github.com/franciscoprin/access-manager-operator/finalizer"
+)
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
@@ -47,18 +56,96 @@ type OktaGroupReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.0/pkg/reconcile
 func (r *OktaGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
 
-	// Print the OktaGroup information
-	og := &accessmanagerv1.OktaGroup{}
-	if err := r.Get(ctx, req.NamespacedName, og); err != nil {
+	// Get Okta group object
+	oktaGroup := &accessmanagerv1.OktaGroup{}
+	if err := r.Get(ctx, req.NamespacedName, oktaGroup); err != nil {
 		log.Log.Error(err, "unable to fetch OktaGroup")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	// Print the OktaGroup information
-	log.Log.Info("OktaGroup information", "Name", og.Name, "Description", og.Spec.Description, "Users", og.Spec.Users)
+
+	// Create the Okta client
+	_, oktaClient, err := okta.NewClient(ctx)
+	if err != nil {
+		log.Log.Error(err, "unable to create Okta client")
+		return ctrl.Result{}, err
+	}
+
+	// Set up the OktaGroup manager
+	m, err := NewOktaGroupManager(ctx, oktaGroup, oktaClient)
+	if err != nil {
+		log.Log.Error(err, "unable to create OktaGroup manager")
+		return ctrl.Result{}, err
+	}
+
+	// Add finalizer: delete Okta group if the OktaGroup CRD is deleted
+	if err := r.finalizeOktaGroup(ctx, oktaGroup, m); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Upsert the Okta group
+	group, err := m.UpsertOktaGroup()
+	if err != nil {
+		log.Log.Error(err, "unable to upsert OktaGroup")
+		return ctrl.Result{}, err
+	}
+
+	// Add users to the Okta group
+	err = m.UpsertUsersToOktaGroup(group)
+	if err != nil {
+		log.Log.Error(err, "unable to upsert users to OktaGroup")
+		return ctrl.Result{}, err
+	}
+
+	// Update the OktaGroup status
+	oktaGroup.Status = accessmanagerv1.OktaGroupStatus{
+		Created: metav1.NewTime(group.Created.UTC()),
+		Id:      group.Id,
+
+		// Convert the time.Time pointers to metav1.Time, with UTC timezone
+		LastMembershipUpdated: metav1.NewTime(group.LastMembershipUpdated.UTC()),
+		LastUpdated:           metav1.NewTime(group.LastUpdated.UTC()),
+	}
+
+	if err := r.Status().Update(ctx, oktaGroup); err != nil {
+		log.Log.Error(err, "unable to update OktaGroup status")
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *OktaGroupReconciler) finalizeOktaGroup(ctx context.Context, oktaGroup *accessmanagerv1.OktaGroup, oktaManager *OktaGroupManager) error {
+	// Check if the OktaGroup instance is marked to be deleted, which is
+	// indicated by the deletion timestamp being set.
+	if !oktaGroup.ObjectMeta.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(oktaGroup, ConstOktaGroupFinalizer) {
+			// Delete the Okta group. If the deletion fails, don't remove the finalizer so
+			// that we can retry during the next reconciliation.
+			if err := oktaManager.DeleteOktaGroup(); err != nil {
+				return err
+			}
+
+			// Remove ConstOktaGroupFinalizer. Once all finalizers have been
+			// removed, the object will be deleted.
+			controllerutil.RemoveFinalizer(oktaGroup, ConstOktaGroupFinalizer)
+			if err := r.Update(ctx, oktaGroup); err != nil {
+				return err
+			}
+
+			// Stop reconciliation as the item is being deleted
+			return nil
+		}
+
+		controllerutil.AddFinalizer(oktaGroup, ConstOktaGroupFinalizer)
+		if err := r.Update(ctx, oktaGroup); err != nil {
+			return err
+		}
+		// Stop reconciliation as the item is being deleted
+		return nil
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

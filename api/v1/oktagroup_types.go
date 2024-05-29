@@ -28,8 +28,6 @@ type OktaGroupSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Name is the name of the Okta group
-	Name string `json:"name"`
 	// Description is the description of the Okta group
 	Description string `json:"description,omitempty"`
 	// Users is the list of users in the Okta group
@@ -40,10 +38,22 @@ type OktaGroupSpec struct {
 type OktaGroupStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// These fields are automatically set by the system.
+
+	// Created is the time when the Okta group was created.
+	Created metav1.Time `json:"created,omitempty"`
+	// Id is the unique identifier of the Okta group.
+	Id string `json:"id,omitempty"`
+	// LastMembershipUpdated is the time when the membership of the Okta group was last updated.
+	LastMembershipUpdated metav1.Time `json:"lastMembershipUpdated,omitempty"`
+	// LastUpdated is the time when the Okta group was last updated.
+	LastUpdated metav1.Time `json:"lastUpdated,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:resource:scope=Cluster
 
 // OktaGroup is the Schema for the oktagroups API
 type OktaGroup struct {

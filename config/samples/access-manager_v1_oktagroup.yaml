@@ -9,4 +9,7 @@ metadata:
     app.kubernetes.io/created-by: access-manager-operator
   name: oktagroup-sample
 spec:
-  # TODO(user): Add fields here
+  # Add fields here
+  users: 
+    - "user1@example.com"
+    - "user2@example.com"
