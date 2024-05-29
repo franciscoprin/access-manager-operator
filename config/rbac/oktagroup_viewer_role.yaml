@@ -1,0 +1,27 @@
+# permissions for end users to view oktagroups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: oktagroup-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: access-manager-operator
+    app.kubernetes.io/part-of: access-manager-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: oktagroup-viewer-role
+rules:
+- apiGroups:
+  - access-manager.github.com
+  resources:
+  - oktagroups
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - access-manager.github.com
+  resources:
+  - oktagroups/status
+  verbs:
+  - get

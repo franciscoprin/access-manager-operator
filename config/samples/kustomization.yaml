@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- access-manager_v1_oktagroup.yaml
+#+kubebuilder:scaffold:manifestskustomizesamples

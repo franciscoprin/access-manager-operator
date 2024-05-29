@@ -1,0 +1,31 @@
+# permissions for end users to edit oktagroups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: oktagroup-editor-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: access-manager-operator
+    app.kubernetes.io/part-of: access-manager-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: oktagroup-editor-role
+rules:
+- apiGroups:
+  - access-manager.github.com
+  resources:
+  - oktagroups
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - access-manager.github.com
+  resources:
+  - oktagroups/status
+  verbs:
+  - get
