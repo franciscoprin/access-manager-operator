@@ -70,13 +70,22 @@ func (m *OktaGroupManager) UpsertUsersToOktaGroup(group *okta.Group) error {
 	// Add the users to the Okta group
 	for _, userEmail := range m.oktaGroup.Spec.Users {
 		// Search for the user by email
-		user, _, err := m.client.User.GetUser(m.ctx, userEmail)
+		users, _, err := m.client.User.ListUsers(m.ctx, &query.Params{Q: userEmail})
 
 		// If there isn't a user with that email, log it and continue
-		if err != nil {
+		if err != nil || len(users) == 0 {
 			log.Log.Info("User not found", "email", userEmail)
 			continue
 		}
+
+		// Checking that there is only one user with that email
+		if len(users) > 1 {
+			log.Log.Error(errors.New("more than one user found with that email"), "unable to add user to Okta group")
+			return errors.New("more than one user found with that email")
+		}
+
+		// Get the user
+		user := users[0]
 
 		// Add the user to the group
 		_, err = m.client.Group.AddUserToGroup(m.ctx, group.Id, user.Id)

@@ -28,20 +28,24 @@ const (
 	charSetSpecial    = "!@#$%&*"
 	testPrefix        = "AMO_TEST_"
 	allCharSet        = charSetAlphaLower + charSetAlphaUpper + charSetNumeric + charSetSpecial
+	passwordLength    = 10
+	emailDomain       = "@example.com"
 )
 
-// randStringFromCharSet generates a random string of 15 lower case letters
-func randomTestString() string {
-	result := make([]byte, 15)
-	for i := 0; i < 15; i++ {
-		result[i] = charSetAlphaLower[rand.Intn(len(charSetAlphaLower))]
+func randomStringFromCharSet(charSet string, length int) string {
+	result := make([]byte, length)
+	for i := range result {
+		result[i] = charSet[rand.Intn(len(charSet))]
 	}
-	return testPrefix + string(result)
+	return string(result)
+}
+
+func randomTestString() string {
+	return testPrefix + randomStringFromCharSet(charSetAlphaLower, 15)
 }
 
 func randomCharFromSet(charSet string) byte {
-	index := rand.Intn(len(charSet))
-	return charSet[index]
+	return charSet[rand.Intn(len(charSet))]
 }
 
 func randomOktaPassword() string {
@@ -63,74 +67,64 @@ func randomOktaPassword() string {
 }
 
 func randomEmail() string {
-	return randomTestString() + "@example.com"
+	return randomTestString() + emailDomain
 }
 
-func TestOktaGroupReconciler(t *testing.T) {
-	// Setup logger
-	log.SetLogger(zap.New(zap.UseDevMode(true)))
-
-	// Create a Okta clients using the Okta SDK
-	ctx, oktaClient, err := tests.NewClient(context.TODO(), okta.WithCache(false))
-
-	// Create users
+func createUser(ctx context.Context, oktaClient *okta.Client, t *testing.T) *okta.User {
 	uc := &okta.UserCredentials{
 		Password: &okta.PasswordCredential{
 			Value: randomOktaPassword(),
 		},
 	}
-	profile := okta.UserProfile{}
-	profile["firstName"] = "John"
-	profile["lastName"] = "Activate"
-	profile["email"] = randomEmail()
-	profile["login"] = profile["email"]
-
+	profile := okta.UserProfile{
+		"firstName": "John",
+		"lastName":  "Doe",
+		"email":     randomEmail(),
+		"login":     randomEmail(),
+	}
 	u := &okta.CreateUserRequest{
 		Credentials: uc,
 		Profile:     &profile,
 	}
-	user1, _, err := oktaClient.User.CreateUser(ctx, *u, nil)
-
-	// Check if the user was created
+	user, _, err := oktaClient.User.CreateUser(ctx, *u, nil)
 	assert.NoError(t, err)
 
-	// Delete the user after the test
-	defer func() {
-		_, err = oktaClient.User.DeactivateUser(ctx, user1.Id, nil)
-		if err != nil {
-			log.Log.Error(err, "unable to deactivate user")
-		}
-		_, err := oktaClient.User.DeactivateOrDeleteUser(ctx, user1.Id, nil)
-		if err != nil {
-			log.Log.Error(err, "unable to delete user")
-		}
-	}()
+	return user
+}
 
-	// create another user
-	profile["email"] = randomEmail()
-	profile["login"] = profile["email"]
-	u = &okta.CreateUserRequest{
-		Credentials: uc,
-		Profile:     &profile,
+func deleteUser(ctx context.Context, oktaClient *okta.Client, userID string) {
+	if _, err := oktaClient.User.DeactivateUser(ctx, userID, nil); err != nil {
+		log.Log.Error(err, "unable to deactivate user")
 	}
-	user2, _, err := oktaClient.User.CreateUser(ctx, *u, nil)
+	if _, err := oktaClient.User.DeactivateOrDeleteUser(ctx, userID, nil); err != nil {
+		log.Log.Error(err, "unable to delete user")
+	}
+}
 
-	// Delete the user after the test
-	defer func() {
-		_, err = oktaClient.User.DeactivateUser(ctx, user2.Id, nil)
-		if err != nil {
-			log.Log.Error(err, "unable to deactivate user")
-		}
-		_, err := oktaClient.User.DeactivateOrDeleteUser(ctx, user2.Id, nil)
-		if err != nil {
-			log.Log.Error(err, "unable to delete user")
-		}
-	}()
+func setupLogger() {
+	log.SetLogger(zap.New(zap.UseDevMode(true)))
+}
 
-	// Register the OktaGroup type with the global scheme
+func setupOktaClient(ctx context.Context, t *testing.T) (*okta.Client, context.Context) {
+	ctx, oktaClient, err := tests.NewClient(ctx, okta.WithCache(false))
+	assert.NoError(t, err)
+	return oktaClient, ctx
+}
+
+func TestOktaGroupReconciler(t *testing.T) {
+	setupLogger()
+	ctx := context.TODO()
+
+	oktaClient, ctx := setupOktaClient(ctx, t)
+
+	user1 := createUser(ctx, oktaClient, t)
+	defer deleteUser(ctx, oktaClient, user1.Id)
+
+	user2 := createUser(ctx, oktaClient, t)
+	defer deleteUser(ctx, oktaClient, user2.Id)
+
 	accessmanagerv1.AddToScheme(scheme.Scheme)
 
-	// Create a fake client with a test OktaGroup object
 	oktaGroup := &accessmanagerv1.OktaGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: testPrefix + "okta-group",
@@ -144,18 +138,15 @@ func TestOktaGroupReconciler(t *testing.T) {
 		},
 	}
 
-	// Create a fake client
-	// fakeClient := fake.NewClientBuilder().WithObjects(oktaGroup).Build()
 	fakeClient := fake.NewClientBuilder().WithRuntimeObjects(oktaGroup).WithStatusSubresource(oktaGroup).Build()
 
-	// Create reconciler with fake client
 	reconciler := &OktaGroupReconciler{
 		Client: fakeClient,
 		Scheme: scheme.Scheme,
 	}
 
-	// Call Reconcile
-	res, err := reconciler.Reconcile(context.Background(), reconcile.Request{
+	// Call Reconcile to create the Okta group
+	res, err := reconciler.Reconcile(ctx, reconcile.Request{
 		NamespacedName: client.ObjectKey{
 			Namespace: oktaGroup.Namespace,
 			Name:      oktaGroup.Name,
@@ -164,15 +155,14 @@ func TestOktaGroupReconciler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, res.Requeue)
 
-	// Refresh the Okta group CRD
-	err = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: oktaGroup.Namespace, Name: oktaGroup.Name}, oktaGroup)
+	// Refresh the Okta group object
+	err = fakeClient.Get(ctx, client.ObjectKey{Namespace: oktaGroup.Namespace, Name: oktaGroup.Name}, oktaGroup)
 	assert.NoError(t, err)
 
-	// Get the okta group by ID
 	group, _, err := oktaClient.Group.GetGroup(ctx, oktaGroup.Status.Id)
 	assert.NoError(t, err)
 
-	// Check Okta group was added in the Okta group CRD status
+	// Check that the Okta group CRD status matches the Okta group
 	assert.Equal(t, oktaGroup.ObjectMeta.Name, group.Profile.Name)
 	assert.Equal(t, oktaGroup.Spec.Description, group.Profile.Description)
 	assert.Equal(t, metav1.NewTime(oktaGroup.Status.Created.UTC()), metav1.NewTime(group.Created.UTC()))
@@ -180,31 +170,27 @@ func TestOktaGroupReconciler(t *testing.T) {
 	assert.Equal(t, metav1.NewTime(oktaGroup.Status.LastMembershipUpdated.UTC()), metav1.NewTime(group.LastMembershipUpdated.UTC()))
 	assert.Equal(t, metav1.NewTime(oktaGroup.Status.LastUpdated.UTC()), metav1.NewTime(group.LastUpdated.UTC()))
 
-	// Check if the users were added to the Okta group
-	groupUsers, _, _ := oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	// Check that the users were added to the Okta group
+	groupUsers, _, err := oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	assert.NoError(t, err)
 
-	// Convert the users to a slice of strings
 	groupUsernames := make([]string, len(groupUsers))
 	for i, user := range groupUsers {
 		groupUsernames[i] = (*user.Profile)["email"].(string)
 	}
-
 	assert.ElementsMatch(t, oktaGroup.Spec.Users, groupUsernames)
 
-	// Delete the Okta group by adding the ObjectMeta.DeletionTimestamp
+	// Delete the Okta group by adding the ObjectMeta.DeletionTimestamp and the finalizer
 	oktaGroup.ObjectMeta.DeletionTimestamp = &metav1.Time{Time: time.Now()}
-	// Add finalizer
 	oktaGroup.ObjectMeta.Finalizers = []string{ConstOktaGroupFinalizer}
 
 	fakeClient = fake.NewClientBuilder().WithRuntimeObjects(oktaGroup).WithStatusSubresource(oktaGroup).Build()
-	assert.NoError(t, err)
 	reconciler = &OktaGroupReconciler{
 		Client: fakeClient,
 		Scheme: scheme.Scheme,
 	}
 
-	// Call Reconcile
-	res, err = reconciler.Reconcile(context.Background(), reconcile.Request{
+	res, err = reconciler.Reconcile(ctx, reconcile.Request{
 		NamespacedName: client.ObjectKey{
 			Namespace: oktaGroup.Namespace,
 			Name:      oktaGroup.Name,
@@ -213,7 +199,7 @@ func TestOktaGroupReconciler(t *testing.T) {
 	assert.Error(t, err)
 	assert.False(t, res.Requeue)
 
-	// Check if the Okta group was deleted
+	// Check that the Okta group was deleted
 	group, _, err = oktaClient.Group.GetGroup(ctx, oktaGroup.Status.Id)
 	assert.Nil(t, group)
 	assert.Error(t, err)
