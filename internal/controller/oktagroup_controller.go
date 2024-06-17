@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -43,7 +42,7 @@ type OktaGroupReconciler struct {
 //+kubebuilder:rbac:groups=access-manager.github.com,resources=oktagroups/finalizers,verbs=update
 
 const (
-	ConstOktaGroupFinalizer = "github.com/franciscoprin/access-manager-operator/finalizer"
+	ConstOktaGroupFinalizer = "franciscoprin.access-manager-operator.finalizer"
 )
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -58,8 +57,8 @@ const (
 func (r *OktaGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	// Get Okta group object
-	oktaGroup := &accessmanagerv1.OktaGroup{}
-	if err := r.Get(ctx, req.NamespacedName, oktaGroup); err != nil {
+	oktaGroupCRD := &accessmanagerv1.OktaGroup{}
+	if err := r.Get(ctx, req.NamespacedName, oktaGroupCRD); err != nil {
 		log.Log.Error(err, "unable to fetch OktaGroup")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -72,80 +71,82 @@ func (r *OktaGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Set up the OktaGroup manager
-	m, err := NewOktaGroupManager(ctx, oktaGroup, oktaClient)
+	oktaManager, err := NewOktaGroupManager(ctx, oktaGroupCRD, oktaClient)
 	if err != nil {
 		log.Log.Error(err, "unable to create OktaGroup manager")
 		return ctrl.Result{}, err
 	}
 
-	// Add finalizer: delete Okta group if the OktaGroup CRD is deleted
-	if err := r.finalizeOktaGroup(ctx, oktaGroup, m); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Upsert the Okta group
-	group, err := m.UpsertOktaGroup()
-	if err != nil {
-		log.Log.Error(err, "unable to upsert OktaGroup")
-		return ctrl.Result{}, err
-	}
-
-	// Add users to the Okta group
-	err = m.UpsertUsersToOktaGroup(group)
-	if err != nil {
-		log.Log.Error(err, "unable to upsert users to OktaGroup")
-		return ctrl.Result{}, err
-	}
-
-	// Update the OktaGroup status
-	oktaGroup.Status = accessmanagerv1.OktaGroupStatus{
-		Created: metav1.NewTime(group.Created.UTC()),
-		Id:      group.Id,
-
-		// Convert the time.Time pointers to metav1.Time, with UTC timezone
-		LastMembershipUpdated: metav1.NewTime(group.LastMembershipUpdated.UTC()),
-		LastUpdated:           metav1.NewTime(group.LastUpdated.UTC()),
-	}
-
-	if err := r.Status().Update(ctx, oktaGroup); err != nil {
-		log.Log.Error(err, "unable to update OktaGroup status")
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *OktaGroupReconciler) finalizeOktaGroup(ctx context.Context, oktaGroup *accessmanagerv1.OktaGroup, oktaManager *OktaGroupManager) error {
-	// Check if the OktaGroup instance is marked to be deleted, which is
-	// indicated by the deletion timestamp being set.
-	if !oktaGroup.ObjectMeta.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(oktaGroup, ConstOktaGroupFinalizer) {
+	// examine DeletionTimestamp to determine if object is under deletion
+	if oktaGroupCRD.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// to registering our finalizer.
+		if !controllerutil.ContainsFinalizer(oktaGroupCRD, ConstOktaGroupFinalizer) {
+			controllerutil.AddFinalizer(oktaGroupCRD, ConstOktaGroupFinalizer)
+			if err := r.Update(ctx, oktaGroupCRD); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(oktaGroupCRD, ConstOktaGroupFinalizer) {
 			// Delete the Okta group. If the deletion fails, don't remove the finalizer so
 			// that we can retry during the next reconciliation.
 			if err := oktaManager.DeleteOktaGroup(); err != nil {
-				return err
+				log.Log.Error(err, "unable to delete OktaGroupAPI")
+				return ctrl.Result{}, err
 			}
 
 			// Remove ConstOktaGroupFinalizer. Once all finalizers have been
 			// removed, the object will be deleted.
-			controllerutil.RemoveFinalizer(oktaGroup, ConstOktaGroupFinalizer)
-			if err := r.Update(ctx, oktaGroup); err != nil {
-				return err
+			controllerutil.RemoveFinalizer(oktaGroupCRD, ConstOktaGroupFinalizer)
+			if err := r.Update(ctx, oktaGroupCRD); err != nil {
+				log.Log.Error(err, "unable to delete after removing finalizer OktaGroupAPI")
+				return ctrl.Result{}, err
 			}
-
-			// Stop reconciliation as the item is being deleted
-			return nil
 		}
 
-		controllerutil.AddFinalizer(oktaGroup, ConstOktaGroupFinalizer)
-		if err := r.Update(ctx, oktaGroup); err != nil {
-			return err
-		}
 		// Stop reconciliation as the item is being deleted
-		return nil
+		return ctrl.Result{}, nil
 	}
 
-	return nil
+	// Upsert the Okta group
+	oktaGroupAPI, err := oktaManager.UpsertOktaGroup()
+	if err != nil {
+		log.Log.Error(err, "unable to upsert OktaGroupAPI")
+		return ctrl.Result{}, err
+	}
+
+	// Add users to the Okta group API
+	if err = oktaManager.UpsertUsersToOktaGroup(oktaGroupAPI); err != nil {
+		log.Log.Error(err, "unable to upsert users to OktaGroupAPI")
+		return ctrl.Result{}, err
+	}
+
+	// Refresh the group by using the Id
+	oktaGroupAPI, err = oktaManager.SearchOktaGroup(oktaGroupAPI.Id)
+	if err != nil {
+		log.Log.Error(err, "unable to get OktaGroupAPI")
+		return ctrl.Result{}, err
+	}
+
+	// Update the OktaGroup status
+	oktaGroupCRD.Status = accessmanagerv1.OktaGroupStatus{
+		Id:      oktaGroupAPI.Id,
+		Created: metav1.NewTime(oktaGroupAPI.Created.UTC()),
+
+		// Convert the time.Time pointers to metav1.Time, with UTC timezone
+		LastMembershipUpdated: metav1.NewTime(oktaGroupAPI.LastMembershipUpdated.UTC()),
+		LastUpdated:           metav1.NewTime(oktaGroupAPI.LastUpdated.UTC()),
+	}
+
+	if err := r.Status().Update(ctx, oktaGroupCRD); err != nil {
+		log.Log.Error(err, "unable to update OktaGroupCRD status")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
