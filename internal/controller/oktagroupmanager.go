@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/okta/okta-sdk-golang/v2/okta"
 	"github.com/okta/okta-sdk-golang/v2/okta/query"
@@ -71,15 +72,20 @@ func contains(slice []string, item string) bool {
 }
 
 func (m *OktaGroupManager) searchUserByEmail(email string) (*okta.User, error) {
-	users, _, err := m.client.User.ListUsers(m.ctx, &query.Params{Q: email})
+	filter := fmt.Sprintf(`profile.email eq "%s"`, email)
+	queryParams := &query.Params{
+		Filter: filter,
+	}
+
+	users, _, err := m.client.User.ListUsers(m.ctx, queryParams)
 	if err != nil || len(users) == 0 {
 		e := errors.New("User not found")
-		log.Log.Error(e, "email", email)
+		log.Log.Error(err, e.Error(), "email", email)
 		return nil, e
 	}
 	if len(users) > 1 {
 		e := errors.New("more than one user found with that email")
-		log.Log.Error(e, "email", email)
+		log.Log.Error(err, e.Error(), "email", email)
 		return nil, e
 	}
 	return users[0], nil
@@ -105,11 +111,19 @@ func (m *OktaGroupManager) UpsertUsersToOktaGroup(group *okta.Group) error {
 
 	// Add the users that are not in the Okta Group but were added to the Okta Group CRD
 	for _, userEmailCRD := range oktaGroupUsersCRD {
-		if contains(oktaGroupUsers, userEmailCRD) {
-			continue
-		}
 		user, err := m.searchUserByEmail(userEmailCRD)
 		if err != nil {
+			continue
+		}
+
+		if contains(oktaGroupUsers, userEmailCRD) {
+			log.Log.Info("User is already in Okta group", "user", user)
+			continue
+		}
+
+		// Skip if the user is not active
+		if user.Status != "ACTIVE" {
+			log.Log.Info("User is not active", "user", user)
 			continue
 		}
 
@@ -122,12 +136,14 @@ func (m *OktaGroupManager) UpsertUsersToOktaGroup(group *okta.Group) error {
 	}
 
 	// Remove the users that are in the Okta Group but were removed from the Okta Group CRD
+	// Also remove those users that are not active
 	for _, userEmail := range oktaGroupUsers {
-		if contains(oktaGroupUsersCRD, userEmail) {
-			continue
-		}
 		user, err := m.searchUserByEmail(userEmail)
 		if err != nil {
+			continue
+		}
+
+		if contains(oktaGroupUsersCRD, userEmail) && user.Status == "ACTIVE" {
 			continue
 		}
 

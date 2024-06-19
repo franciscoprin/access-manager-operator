@@ -135,7 +135,16 @@ func callReconciler(ctx context.Context, t *testing.T, oktaGroupCRD *accessmanag
 	return fakeClient, reconciler, err
 }
 
+// Delete Okta group if it exists
+func deleteOktaGroup(ctx context.Context, oktaClient *okta.Client, id string) {
+	if _, err := oktaClient.Group.DeleteGroup(ctx, id); err != nil {
+		log.Log.Error(err, "unable to delete Okta group")
+	}
+}
+
 func TestOktaGroupReconciler_HappyPath(t *testing.T) {
+	// t.Parallel()
+
 	setupLogger()
 	ctx := context.TODO()
 
@@ -166,9 +175,12 @@ func TestOktaGroupReconciler_HappyPath(t *testing.T) {
 	_, _, err := callReconciler(ctx, t, oktaGroupCRD)
 
 	group, _, err := oktaClient.Group.GetGroup(ctx, oktaGroupCRD.Status.Id)
-	assert.NoError(t, err)
+
+	// In case that the test fails and the Okta group is not deleted
+	defer deleteOktaGroup(ctx, oktaClient, group.Id)
 
 	// Check that the Okta group CRD status matches the Okta group
+	assert.NoError(t, err)
 	assert.Equal(t, oktaGroupCRD.ObjectMeta.Name, group.Profile.Name)
 	assert.Equal(t, oktaGroupCRD.Spec.Description, group.Profile.Description)
 	assert.Equal(t, metav1.NewTime(oktaGroupCRD.Status.Created.UTC()), metav1.NewTime(group.Created.UTC()))
@@ -210,6 +222,8 @@ func TestOktaGroupReconciler_HappyPath(t *testing.T) {
 }
 
 func TestOktaGroupReconciler_UsersUpsert(t *testing.T) {
+	// t.Parallel()
+
 	setupLogger()
 	ctx := context.TODO()
 	accessmanagerv1.AddToScheme(scheme.Scheme)
@@ -244,6 +258,10 @@ func TestOktaGroupReconciler_UsersUpsert(t *testing.T) {
 	assert.NoError(t, err)
 
 	group, _, err := oktaClient.Group.GetGroup(ctx, oktaGroupCRD.Status.Id)
+
+	// In case that the test fails and the Okta group is not deleted
+	defer deleteOktaGroup(ctx, oktaClient, group.Id)
+
 	assert.NoError(t, err)
 
 	// Check that the users were added to the Okta group
@@ -308,23 +326,101 @@ func TestOktaGroupReconciler_UsersUpsert(t *testing.T) {
 
 	// Check that the removed user is not in the Okta group
 	assert.Contains(t, groupUsernames, (*user2.Profile)["email"].(string))
+}
 
-	// Set the DeletionTimestamp to trigger deletion
-	oktaGroupCRD.ObjectMeta.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+func TestOktaGroupReconciler_IgnoreDisableUsers(t *testing.T) {
+	// t.Parallel()
 
-	// Reconciliation for deletion
-	fakeClient, _, _ := callReconciler(ctx, t, oktaGroupCRD)
+	setupLogger()
+	ctx := context.TODO()
+	accessmanagerv1.AddToScheme(scheme.Scheme)
 
-	// Check that the OktaGroupCRD was deleted
-	//// List the oktaGroupCRDs
-	oktaGroupCRDList := &accessmanagerv1.OktaGroupList{}
-	err = fakeClient.List(ctx, oktaGroupCRDList)
-	//// Check that the oktaGroupCRD is not in the list
+	oktaClient, ctx := setupOktaClient(ctx, t)
+
+	user1 := createUser(ctx, oktaClient, t)
+	defer deleteUser(ctx, oktaClient, user1.Id)
+
+	user2 := createUser(ctx, oktaClient, t)
+	defer deleteUser(ctx, oktaClient, user2.Id)
+
+	user3 := createUser(ctx, oktaClient, t)
+	defer deleteUser(ctx, oktaClient, user3.Id)
+
+	user4 := createUser(ctx, oktaClient, t)
+	defer deleteUser(ctx, oktaClient, user4.Id)
+
+	// Disable user4
+	if _, err := oktaClient.User.DeactivateUser(ctx, user4.Id, nil); err != nil {
+		log.Log.Error(err, "unable to deactivate user")
+	}
+
+	oktaGroupCRD := &accessmanagerv1.OktaGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testPrefix + "IgnoreDisableUsers",
+		},
+		Spec: accessmanagerv1.OktaGroupSpec{
+			Description: "Test Okta Group",
+			Users: []string{
+				(*user1.Profile)["email"].(string),
+				(*user2.Profile)["email"].(string),
+				(*user3.Profile)["email"].(string),
+				(*user4.Profile)["email"].(string),
+			},
+		},
+	}
+
+	// Call Reconcile to create the Okta group
+	_, _, err := callReconciler(ctx, t, oktaGroupCRD)
 	assert.NoError(t, err)
-	assert.NotContains(t, oktaGroupCRDList.Items, *oktaGroupCRD)
 
-	// Check that the Okta group was deleted
-	group, _, err = oktaClient.Group.GetGroup(ctx, oktaGroupCRD.Status.Id)
-	assert.Nil(t, group)
-	assert.Error(t, err)
+	group, _, err := oktaClient.Group.GetGroup(ctx, oktaGroupCRD.Status.Id)
+
+	// In case that the test fails and the Okta group is not deleted
+	defer deleteOktaGroup(ctx, oktaClient, group.Id)
+
+	assert.NoError(t, err)
+
+	// Check that the users were added to the Okta group
+	groupUsers, _, err := oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	assert.NoError(t, err)
+
+	groupUsernames := make([]string, len(groupUsers))
+	for i, user := range groupUsers {
+		groupUsernames[i] = (*user.Profile)["email"].(string)
+	}
+
+	activeUsers := []string{
+		(*user1.Profile)["email"].(string),
+		(*user2.Profile)["email"].(string),
+		(*user3.Profile)["email"].(string),
+	}
+	assert.ElementsMatch(t, activeUsers, groupUsernames)
+
+	// Disable user2
+	if _, err := oktaClient.User.DeactivateUser(ctx, user2.Id, nil); err != nil {
+		log.Log.Error(err, "unable to deactivate user")
+	}
+
+	// Reconciliation to remove disabled user2
+	_, _, err = callReconciler(ctx, t, oktaGroupCRD)
+	assert.NoError(t, err)
+
+	// Check that the user was remove from the Okta group
+	groupUsers, _, err = oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	assert.NoError(t, err)
+
+	groupUsernames = make([]string, len(groupUsers))
+	for i, user := range groupUsers {
+		groupUsernames[i] = (*user.Profile)["email"].(string)
+	}
+
+	// Check that the removed user is not in the Okta group
+	assert.NotContains(t, groupUsernames, (*user2.Profile)["email"].(string))
+
+	// Check that only user1 and user3 are in the Okta group
+	activeUsers = []string{
+		(*user1.Profile)["email"].(string),
+		(*user3.Profile)["email"].(string),
+	}
+	assert.ElementsMatch(t, activeUsers, groupUsernames)
 }

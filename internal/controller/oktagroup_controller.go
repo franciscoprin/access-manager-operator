@@ -64,7 +64,7 @@ func (r *OktaGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Create the Okta client
-	_, oktaClient, err := okta.NewClient(ctx)
+	_, oktaClient, err := okta.NewClient(ctx, okta.WithCache(false))
 	if err != nil {
 		log.Log.Error(err, "unable to create Okta client")
 		return ctrl.Result{}, err
