@@ -3,6 +3,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"testing"
 	"time"
@@ -142,6 +143,25 @@ func deleteOktaGroup(ctx context.Context, oktaClient *okta.Client, id string) {
 	}
 }
 
+// fetchGroupUsersEmails fetches the email addresses of users in a given Okta group.
+func fetchGroupUsersEmails(ctx context.Context, oktaClient *okta.Client, groupID string) ([]string, error) {
+	groupUsersAPI, _, err := oktaClient.Group.ListGroupUsers(ctx, groupID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	groupUsersEmailAPI := make([]string, len(groupUsersAPI))
+	for i, user := range groupUsersAPI {
+		email, ok := (*user.Profile)["email"].(string)
+		if !ok {
+			return nil, errors.New("email not found in user profile")
+		}
+		groupUsersEmailAPI[i] = email
+	}
+
+	return groupUsersEmailAPI, nil
+}
+
 func TestOktaGroupReconciler_HappyPath(t *testing.T) {
 	// t.Parallel()
 
@@ -192,13 +212,8 @@ func TestOktaGroupReconciler_HappyPath(t *testing.T) {
 	assert.Contains(t, oktaGroupCRD.ObjectMeta.Finalizers, ConstOktaGroupFinalizer)
 
 	// Check that the users were added to the Okta group
-	groupUsersAPI, _, err := oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	groupUsersEmailAPI, err := fetchGroupUsersEmails(ctx, oktaClient, group.Id)
 	assert.NoError(t, err)
-
-	groupUsersEmailAPI := make([]string, len(groupUsersAPI))
-	for i, user := range groupUsersAPI {
-		groupUsersEmailAPI[i] = (*user.Profile)["email"].(string)
-	}
 	assert.ElementsMatch(t, oktaGroupCRD.Spec.Users, groupUsersEmailAPI)
 
 	// Set the DeletionTimestamp to trigger deletion
@@ -265,14 +280,9 @@ func TestOktaGroupReconciler_UsersUpsert(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Check that the users were added to the Okta group
-	groupUsers, _, err := oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	groupUsersEmailAPI, err := fetchGroupUsersEmails(ctx, oktaClient, group.Id)
 	assert.NoError(t, err)
-
-	groupUsernames := make([]string, len(groupUsers))
-	for i, user := range groupUsers {
-		groupUsernames[i] = (*user.Profile)["email"].(string)
-	}
-	assert.ElementsMatch(t, oktaGroupCRD.Spec.Users, groupUsernames)
+	assert.ElementsMatch(t, oktaGroupCRD.Spec.Users, groupUsersEmailAPI)
 
 	// Remove a user from the Okta group CRD
 
@@ -290,16 +300,11 @@ func TestOktaGroupReconciler_UsersUpsert(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Check that the user was remove from the Okta group
-	groupUsers, _, err = oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	groupUsersEmailAPI, err = fetchGroupUsersEmails(ctx, oktaClient, group.Id)
 	assert.NoError(t, err)
-
-	groupUsernames = make([]string, len(groupUsers))
-	for i, user := range groupUsers {
-		groupUsernames[i] = (*user.Profile)["email"].(string)
-	}
-	assert.ElementsMatch(t, expectedUsers, groupUsernames)
+	assert.ElementsMatch(t, expectedUsers, groupUsersEmailAPI)
 	// Check that the removed user is not in the Okta group
-	assert.NotContains(t, groupUsernames, (*user2.Profile)["email"].(string))
+	assert.NotContains(t, groupUsersEmailAPI, (*user2.Profile)["email"].(string))
 
 	// Add back the removed user to the Okta group CRD
 	expectedUsers = []string{
@@ -315,17 +320,12 @@ func TestOktaGroupReconciler_UsersUpsert(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Check that the user was remove from the Okta group
-	groupUsers, _, err = oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	groupUsersEmailAPI, err = fetchGroupUsersEmails(ctx, oktaClient, group.Id)
 	assert.NoError(t, err)
-
-	groupUsernames = make([]string, len(groupUsers))
-	for i, user := range groupUsers {
-		groupUsernames[i] = (*user.Profile)["email"].(string)
-	}
-	assert.ElementsMatch(t, expectedUsers, groupUsernames)
+	assert.ElementsMatch(t, expectedUsers, groupUsersEmailAPI)
 
 	// Check that the removed user is not in the Okta group
-	assert.Contains(t, groupUsernames, (*user2.Profile)["email"].(string))
+	assert.Contains(t, groupUsersEmailAPI, (*user2.Profile)["email"].(string))
 }
 
 func TestOktaGroupReconciler_IgnoreDisableUsers(t *testing.T) {
@@ -381,20 +381,15 @@ func TestOktaGroupReconciler_IgnoreDisableUsers(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Check that the users were added to the Okta group
-	groupUsers, _, err := oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	groupUsersEmailAPI, err := fetchGroupUsersEmails(ctx, oktaClient, group.Id)
 	assert.NoError(t, err)
-
-	groupUsernames := make([]string, len(groupUsers))
-	for i, user := range groupUsers {
-		groupUsernames[i] = (*user.Profile)["email"].(string)
-	}
 
 	activeUsers := []string{
 		(*user1.Profile)["email"].(string),
 		(*user2.Profile)["email"].(string),
 		(*user3.Profile)["email"].(string),
 	}
-	assert.ElementsMatch(t, activeUsers, groupUsernames)
+	assert.ElementsMatch(t, activeUsers, groupUsersEmailAPI)
 
 	// Disable user2
 	if _, err := oktaClient.User.DeactivateUser(ctx, user2.Id, nil); err != nil {
@@ -406,21 +401,16 @@ func TestOktaGroupReconciler_IgnoreDisableUsers(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Check that the user was remove from the Okta group
-	groupUsers, _, err = oktaClient.Group.ListGroupUsers(ctx, group.Id, nil)
+	groupUsersEmailAPI, err = fetchGroupUsersEmails(ctx, oktaClient, group.Id)
 	assert.NoError(t, err)
 
-	groupUsernames = make([]string, len(groupUsers))
-	for i, user := range groupUsers {
-		groupUsernames[i] = (*user.Profile)["email"].(string)
-	}
-
 	// Check that the removed user is not in the Okta group
-	assert.NotContains(t, groupUsernames, (*user2.Profile)["email"].(string))
+	assert.NotContains(t, groupUsersEmailAPI, (*user2.Profile)["email"].(string))
 
 	// Check that only user1 and user3 are in the Okta group
 	activeUsers = []string{
 		(*user1.Profile)["email"].(string),
 		(*user3.Profile)["email"].(string),
 	}
-	assert.ElementsMatch(t, activeUsers, groupUsernames)
+	assert.ElementsMatch(t, activeUsers, groupUsersEmailAPI)
 }
